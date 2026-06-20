@@ -17,7 +17,10 @@ DEFAULTS = {
     "lat": 59.33,
     "lon": 18.07,
     "week": 25,
-    "min_conf": 0.35,
+    "min_conf": 0.25,
+    "sensitivity": 1.2,
+    "overlap": 2.0,
+    "merge_consecutive": 3,
     "locale": "sv",
 }
 
@@ -33,6 +36,9 @@ class Session:
     lon: float
     week: int
     min_conf: float
+    sensitivity: float
+    overlap: float
+    merge_consecutive: int
     locale: str
     bg_landscape: Path | None
     bg_portrait: Path | None
@@ -110,6 +116,9 @@ def load_session(session_id: str) -> Session:
         lon=float(merged["lon"]),
         week=int(merged["week"]),
         min_conf=float(merged["min_conf"]),
+        sensitivity=float(merged["sensitivity"]),
+        overlap=float(merged["overlap"]),
+        merge_consecutive=int(merged["merge_consecutive"]),
         locale=str(merged["locale"]),
         bg_landscape=_optional_asset(session_dir, "landscape.jpg"),
         bg_portrait=_optional_asset(session_dir, "portrait.jpg"),

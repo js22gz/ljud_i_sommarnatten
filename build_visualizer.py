@@ -114,7 +114,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     .wave-wrap {
       position: relative;
-      height: 120px;
+      height: 200px;
       border-radius: 16px;
       background: var(--panel);
       border: 1px solid var(--line);
@@ -217,19 +217,83 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       backdrop-filter: blur(6px);
       border: 1px solid var(--line);
     }
+    .legend-entry {
+      position: relative;
+    }
     .legend-item {
       --highlight-strength: 0;
       display: inline-flex;
       align-items: center;
       gap: 10px;
+      font: inherit;
       font-size: 1.05rem;
       color: var(--muted);
       background: rgba(255, 255, 255, 0.04);
       border: 1px solid transparent;
       border-radius: 999px;
       padding: 8px 14px;
+      cursor: pointer;
       transition: color 0.3s ease, background 0.4s ease, border-color 0.4s ease,
         box-shadow 0.4s ease, transform 0.4s ease;
+    }
+    .legend-item:hover {
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+    .legend-entry.open .legend-item {
+      border-color: rgba(110, 231, 183, 0.35);
+    }
+    .legend-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      min-width: 11.5rem;
+      max-width: 16rem;
+      max-height: 240px;
+      overflow-y: auto;
+      margin: 0;
+      padding: 6px;
+      list-style: none;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(18, 26, 43, 0.96);
+      box-shadow: var(--shadow);
+      z-index: 30;
+    }
+    .legend-menu[hidden] {
+      display: none;
+    }
+    .legend-menu-item {
+      display: block;
+      width: 100%;
+      font: inherit;
+      font-size: 0.88rem;
+      color: var(--text);
+      text-align: left;
+      background: transparent;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+    }
+    .legend-menu-item:hover,
+    .legend-menu-item:focus-visible {
+      background: rgba(110, 231, 183, 0.12);
+      color: var(--accent);
+      outline: none;
+    }
+    .legend-menu-time {
+      font-variant-numeric: tabular-nums;
+    }
+    .legend-menu-confidence {
+      float: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .legend-menu-item:hover .legend-menu-confidence,
+    .legend-menu-item:focus-visible .legend-menu-confidence {
+      color: var(--accent);
     }
     .legend-item.active {
       color: var(--text);
@@ -247,6 +311,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .legend-item.active .swatch {
       transform: scale(calc(1 + var(--highlight-strength) * 0.25));
+    }
+    .legend-item.minor {
+      font-size: 0.88rem;
+      padding: 6px 11px;
+      opacity: 0.82;
+    }
+    .legend-item.minor.active {
+      opacity: 1;
+    }
+    .legend-label {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.45rem;
+    }
+    .legend-confidence {
+      display: none;
+      font-size: 0.82em;
+      font-variant-numeric: tabular-nums;
+      color: var(--accent);
+      letter-spacing: 0.02em;
+    }
+    .legend-item.active .legend-confidence {
+      display: inline;
     }
 
     footer {
@@ -272,7 +359,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <section class="card player-section">
       <div class="card-body player">
-        <audio id="audio" class="audio-hidden" preload="metadata"></audio>
+        <audio id="audio" class="audio-hidden" preload="auto" autoplay playsinline></audio>
         <div class="wave-wrap" id="waveWrap" role="button" aria-label="Spela inspelning" tabindex="0">
           <canvas id="waveCanvas"></canvas>
           <canvas id="timelineCanvas"></canvas>
@@ -321,6 +408,35 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         : duration;
     }
 
+    async function setupAudio() {
+      const audioUrl = "__AUDIO_FILE__";
+      try {
+        const response = await fetch(audioUrl);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const buffer = await response.arrayBuffer();
+        const mime = response.headers.get("content-type") || "audio/mpeg";
+        audio.src = URL.createObjectURL(new Blob([buffer], { type: mime }));
+      } catch {
+        audio.src = audioUrl;
+      }
+    }
+
+    let audioReady = false;
+    function startAutoplay() {
+      if (audioReady) {
+        return;
+      }
+      audioReady = true;
+      document.getElementById("totalTime").textContent = formatTime(audio.duration || duration);
+      drawWaveform();
+      drawDetectionOverlay();
+      updatePlayhead();
+      audio.play().catch(() => {});
+      setPlayingState(!audio.paused);
+    }
+
     function seekToRatio(ratio) {
       const target = Math.max(0, Math.min(1, ratio)) * getDuration();
       audio.currentTime = target;
@@ -331,6 +447,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const wasPaused = audio.paused;
       seekToRatio(ratio);
       if (!wasPaused) {
+        updatePlayhead();
         return;
       }
 
@@ -356,12 +473,38 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       waveWrap.setAttribute("aria-label", isPlaying ? "Pausa inspelning" : "Spela inspelning");
     }
 
+    const DISPLAY_MIN_CONFIDENCE = 0.5;
     const colorBySpecies = new Map();
+    const speciesCount = new Map();
+    const speciesLane = new Map();
     const legendHolds = new Map();
-    const LEGEND_MIN_CONFIDENCE = 0.4;
+    const LEGEND_TOP_COUNT = 8;
 
-    data.summary.forEach((species, index) => {
+    const visibleSpecies = data.summary.filter((species) =>
+      data.detections.some(
+        (det) =>
+          det.scientific_name === species.scientific_name &&
+          det.confidence >= DISPLAY_MIN_CONFIDENCE
+      )
+    );
+
+    const detectionsBySpecies = new Map();
+    for (const det of data.detections) {
+      if (det.confidence < DISPLAY_MIN_CONFIDENCE) {
+        continue;
+      }
+      const list = detectionsBySpecies.get(det.scientific_name) ?? [];
+      list.push(det);
+      detectionsBySpecies.set(det.scientific_name, list);
+    }
+    for (const list of detectionsBySpecies.values()) {
+      list.sort((a, b) => a.start - b.start || b.confidence - a.confidence);
+    }
+
+    visibleSpecies.forEach((species, index) => {
       colorBySpecies.set(species.scientific_name, COLORS[index % COLORS.length]);
+      speciesCount.set(species.scientific_name, species.count);
+      speciesLane.set(species.scientific_name, index);
     });
 
     function formatTime(seconds) {
@@ -376,12 +519,87 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       title.title = data.audio_file;
     }
 
+    function renderDetectionMenuItem(det) {
+      const endLabel = det.end > det.start + 0.5 ? `–${formatTime(det.end)}` : "";
+      return `<li><button type="button" class="legend-menu-item" data-start="${det.start}"><span class="legend-menu-time">${formatTime(det.start)}${endLabel}</span><span class="legend-menu-confidence">${Math.round(det.confidence * 100)}%</span></button></li>`;
+    }
+
     function setupLegend() {
       const legend = document.getElementById("legend");
-      legend.innerHTML = data.summary.slice(0, 8).map(species => {
+      legend.innerHTML = visibleSpecies.map((species, index) => {
         const color = colorBySpecies.get(species.scientific_name);
-        return `<span class="legend-item" data-species="${species.scientific_name}"><span class="swatch" style="background:${color}"></span>${species.common_name}</span>`;
+        const minorClass = index >= LEGEND_TOP_COUNT ? " minor" : "";
+        const detections = detectionsBySpecies.get(species.scientific_name) ?? [];
+        const menuItems = detections.map(renderDetectionMenuItem).join("");
+        return `<div class="legend-entry"><button type="button" class="legend-item${minorClass}" data-species="${species.scientific_name}" aria-expanded="false" aria-haspopup="listbox"><span class="swatch" style="background:${color}"></span><span class="legend-label"><span class="legend-name">${species.common_name}</span><span class="legend-confidence"></span></span></button><ul class="legend-menu" role="listbox" hidden>${menuItems}</ul></div>`;
       }).join("");
+    }
+
+    function closeLegendMenus(exceptEntry = null) {
+      document.querySelectorAll(".legend-entry").forEach((entry) => {
+        if (entry === exceptEntry) {
+          return;
+        }
+        entry.classList.remove("open");
+        const button = entry.querySelector(".legend-item");
+        const menu = entry.querySelector(".legend-menu");
+        if (button) {
+          button.setAttribute("aria-expanded", "false");
+        }
+        if (menu) {
+          menu.hidden = true;
+        }
+      });
+    }
+
+    function seekToDetection(startSeconds) {
+      const total = getDuration();
+      if (total <= 0) {
+        return;
+      }
+      const wasPaused = audio.paused;
+      seekToRatio(startSeconds / total);
+      updatePlayhead();
+      if (wasPaused) {
+        audio.play().catch(() => {});
+      }
+    }
+
+    function setupLegendMenus() {
+      const legend = document.getElementById("legend");
+
+      legend.addEventListener("click", (event) => {
+        const menuItem = event.target.closest(".legend-menu-item");
+        if (menuItem) {
+          event.stopPropagation();
+          seekToDetection(Number(menuItem.dataset.start));
+          closeLegendMenus();
+          return;
+        }
+
+        const button = event.target.closest(".legend-item");
+        if (!button) {
+          return;
+        }
+
+        event.stopPropagation();
+        const entry = button.closest(".legend-entry");
+        const menu = entry.querySelector(".legend-menu");
+        const willOpen = menu.hidden;
+        closeLegendMenus(willOpen ? entry : null);
+        if (willOpen) {
+          entry.classList.add("open");
+          menu.hidden = false;
+          button.setAttribute("aria-expanded", "true");
+        }
+      });
+
+      document.addEventListener("click", () => closeLegendMenus());
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeLegendMenus();
+        }
+      });
     }
 
     function holdAfterSeconds(confidence) {
@@ -393,7 +611,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         if (
           currentTime >= det.start &&
           currentTime <= det.end &&
-          det.confidence >= LEGEND_MIN_CONFIDENCE
+          det.confidence >= DISPLAY_MIN_CONFIDENCE
         ) {
           const untilTime = det.end + holdAfterSeconds(det.confidence);
           const existing = legendHolds.get(det.scientific_name);
@@ -413,9 +631,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       document.querySelectorAll(".legend-item").forEach((item) => {
         const state = legendHolds.get(item.dataset.species);
         const isActive = Boolean(state);
+        const confidenceEl = item.querySelector(".legend-confidence");
         item.classList.toggle("active", isActive);
         item.style.setProperty("--highlight-strength", isActive ? String(state.strength) : "0");
+        if (confidenceEl) {
+          confidenceEl.textContent = isActive
+            ? `${Math.round(state.strength * 100)}%`
+            : "";
+        }
       });
+
     }
 
     function resizeCanvas(canvas, wrap) {
@@ -435,36 +660,58 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const { ctx, width, height } = resizeCanvas(waveCanvas, wrap);
       const peaks = data.waveform_peaks;
       const mid = height / 2;
+      const barWidth = Math.max(1, width / peaks.length);
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = "rgba(255,255,255,0.03)";
       ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = "rgba(157,176,211,0.85)";
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
+      ctx.fillStyle = "rgba(157,176,211,0.85)";
       peaks.forEach((peak, index) => {
         const x = (index / (peaks.length - 1)) * width;
         const amp = peak * (height * 0.38);
-        ctx.moveTo(x, mid - amp);
-        ctx.lineTo(x, mid + amp);
+        ctx.fillRect(x - barWidth / 2, mid - amp, barWidth, amp * 2);
       });
-      ctx.stroke();
     }
 
     function drawDetectionOverlay() {
       const wrap = document.getElementById("waveWrap");
       const { ctx, width, height } = resizeCanvas(timelineCanvas, wrap);
+      const laneCount = Math.max(1, visibleSpecies.length);
+      const topPad = 6;
+      const laneHeight = Math.max(3, (height - topPad * 2) / laneCount);
+      const sortedDetections = [...data.detections]
+        .filter((det) => det.confidence >= DISPLAY_MIN_CONFIDENCE)
+        .sort((a, b) => {
+          const countA = speciesCount.get(a.scientific_name) ?? 0;
+          const countB = speciesCount.get(b.scientific_name) ?? 0;
+          return countA - countB;
+        });
+
       ctx.clearRect(0, 0, width, height);
-      data.detections.forEach(det => {
-        const x = (det.start / duration) * width;
-        const w = Math.max(2, ((det.end - det.start) / duration) * width);
-        ctx.fillStyle = colorBySpecies.get(det.scientific_name) + "55";
-        ctx.fillRect(x, 8, w, height - 16);
+      sortedDetections.forEach(det => {
+        if (det.end <= 0 || det.start >= duration) {
+          return;
+        }
+        const lane = speciesLane.get(det.scientific_name);
+        if (lane === undefined) {
+          return;
+        }
+        const start = Math.max(0, det.start);
+        const end = Math.min(duration, det.end);
+        const x = (start / duration) * width;
+        const w = Math.max(2, ((end - start) / duration) * width);
+        const y = topPad + lane * laneHeight;
+        const alpha = Math.round(90 + det.confidence * 110)
+          .toString(16)
+          .padStart(2, "0");
+        ctx.fillStyle = colorBySpecies.get(det.scientific_name) + alpha;
+        ctx.fillRect(x, y, w, Math.max(2, laneHeight - 1));
       });
     }
 
     function updatePlayhead() {
       const wrap = document.getElementById("waveWrap");
-      const ratio = audio.currentTime / duration;
+      const total = getDuration();
+      const ratio = total > 0 ? audio.currentTime / total : 0;
       playhead.style.left = `${ratio * wrap.clientWidth}px`;
       document.getElementById("currentTime").textContent = formatTime(audio.currentTime);
       updateLegendHighlights(audio.currentTime);
@@ -523,10 +770,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const LONG_PRESS_MS = 450;
       let longPressTimer = null;
       let longPressTriggered = false;
-      let hasPlayed = false;
 
       function isWaveTarget(event) {
-        return !event.target.closest(".volume-slider");
+        return (
+          !event.target.closest(".volume-slider") &&
+          !event.target.closest(".time")
+        );
       }
 
       function ratioFromEvent(event) {
@@ -538,6 +787,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         if (longPressTimer) {
           clearTimeout(longPressTimer);
           longPressTimer = null;
+        }
+      }
+
+      function seekFromEvent(event) {
+        const wasPaused = audio.paused;
+        playFromRatio(ratioFromEvent(event));
+        updatePlayhead();
+        if (!wasPaused && audio.paused) {
+          audio.play().catch(() => {});
         }
       }
 
@@ -569,11 +827,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           longPressTriggered = false;
           return;
         }
-        if (!hasPlayed) {
-          playFromRatio(0);
-          return;
-        }
-        playFromRatio(ratioFromEvent(event));
+        seekFromEvent(event);
       });
 
       waveWrap.addEventListener("contextmenu", (event) => {
@@ -602,19 +856,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       });
 
       audio.addEventListener("play", () => {
-        hasPlayed = true;
         setPlayingState(true);
       });
       audio.addEventListener("pause", () => setPlayingState(false));
       audio.addEventListener("ended", () => setPlayingState(false));
       audio.addEventListener("timeupdate", updatePlayhead);
-      audio.addEventListener("loadedmetadata", () => {
-        document.getElementById("totalTime").textContent = formatTime(audio.duration || duration);
-        drawWaveform();
-        drawDetectionOverlay();
-        updatePlayhead();
-        setPlayingState(!audio.paused);
-      });
+      audio.addEventListener("loadedmetadata", startAutoplay, { once: true });
       window.addEventListener("resize", () => {
         drawWaveform();
         drawDetectionOverlay();
@@ -622,10 +869,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       });
     }
 
-    audio.src = "__AUDIO_FILE__";
     setupHeader();
     setupLegend();
+    setupLegendMenus();
     setupInteractions();
+    await setupAudio();
+    if (audio.readyState >= 1) {
+      startAutoplay();
+    }
     })();
   </script>
 </body>
@@ -714,9 +965,17 @@ def _copy_asset(source: Path, target_dir: Path) -> None:
 def publish(session) -> None:
     build(session)
 
+    cname = None
+    cname_path = DOCS_DIR / "CNAME"
+    if cname_path.exists():
+        cname = cname_path.read_text(encoding="utf-8")
+
     if DOCS_DIR.exists():
         shutil.rmtree(DOCS_DIR)
     DOCS_DIR.mkdir(parents=True)
+
+    if cname is not None:
+        cname_path.write_text(cname, encoding="utf-8")
 
     _write_html(session, DOCS_DIR)
     _copy_asset(session.results_path, DOCS_DIR)

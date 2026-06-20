@@ -5,6 +5,9 @@
   "lat": 59.33,
   "lon": 18.07,
   "week": 25,
-  "min_conf": 0.35,
+  "min_conf": 0.25,
+  "sensitivity": 1.3,
+  "overlap": 2.0,
+  "merge_consecutive": 1,
   "locale": "sv"
 }

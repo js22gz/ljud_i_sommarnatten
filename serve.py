@@ -11,7 +11,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn
 
-from sessions import load_session
+from sessions import ROOT, load_session
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -71,18 +71,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", help="Recording session id (folder under sessions/)")
     parser.add_argument("--directory", type=Path, help="Override directory to serve")
+    parser.add_argument(
+        "--root",
+        action="store_true",
+        help="Serve project root (e.g. /sessions/<id>/index.html) with Range support",
+    )
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
-    if args.directory:
+    if args.root:
+        serve_dir = ROOT
+    elif args.directory:
         serve_dir = args.directory
     elif args.session:
         session = load_session(args.session)
         serve_dir = session.root
     else:
-        raise SystemExit("Provide --session <id> or --directory <path>.")
+        raise SystemExit("Provide --session <id>, --root, or --directory <path>.")
 
-    if not (serve_dir / "index.html").exists():
+    if not args.root and not (serve_dir / "index.html").exists():
         raise SystemExit(f"No visualizer in {serve_dir}. Run build_visualizer.py first.")
 
     os.chdir(serve_dir)

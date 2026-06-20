@@ -28,6 +28,57 @@ def load_exclusions(path: Path) -> set[str]:
     }
 
 
+def clip_detections_to_duration(
+    detections: list[dict],
+    duration_seconds: float,
+) -> list[dict]:
+    clipped: list[dict] = []
+    for det in detections:
+        if det["start"] >= duration_seconds:
+            continue
+        end = min(det["end"], duration_seconds)
+        clipped.append(
+            {
+                **det,
+                "end": round(end, 2),
+                "duration": round(end - det["start"], 2),
+            }
+        )
+    return clipped
+
+
+def merge_adjacent_detections(
+    detections: list[dict],
+    *,
+    max_gap: float = 4.0,
+) -> list[dict]:
+    by_species: dict[str, list[dict]] = {}
+    for det in detections:
+        by_species.setdefault(det["scientific_name"], []).append(det)
+
+    merged: list[dict] = []
+    for species_dets in by_species.values():
+        species_dets.sort(key=lambda item: item["start"])
+        current: dict | None = None
+        for det in species_dets:
+            if current and det["start"] - current["end"] <= max_gap:
+                current["end"] = round(max(current["end"], det["end"]), 2)
+                current["duration"] = round(current["end"] - current["start"], 2)
+                current["confidence"] = round(
+                    max(current["confidence"], det["confidence"]),
+                    4,
+                )
+            else:
+                if current:
+                    merged.append(current)
+                current = dict(det)
+        if current:
+            merged.append(current)
+
+    merged.sort(key=lambda item: item["start"])
+    return merged
+
+
 def apply_exclusions(detections: list[dict], exclusions: set[str]) -> list[dict]:
     if not exclusions:
         return detections
@@ -38,6 +89,29 @@ def apply_exclusions(detections: list[dict], exclusions: set[str]) -> list[dict]
     ]
 
 
+def birdnet_csv_path(audio: Path, output_dir: Path) -> Path:
+    return output_dir / f"{audio.stem}.BirdNET.results.csv"
+
+
+def find_birdnet_csv(audio: Path, output_dir: Path) -> Path:
+    expected = birdnet_csv_path(audio, output_dir)
+    if expected.exists():
+        return expected
+
+    matches = sorted(output_dir.glob("*.BirdNET.results.csv"))
+    if not matches:
+        raise FileNotFoundError(f"No BirdNET CSV results found in {output_dir}")
+
+    if len(matches) == 1:
+        return matches[0]
+
+    names = ", ".join(path.name for path in matches)
+    raise FileNotFoundError(
+        f"No BirdNET CSV for {audio.name} in {output_dir}. "
+        f"Found other result files: {names}. Re-run analysis without --skip-birdnet."
+    )
+
+
 def run_birdnet(
     audio: Path,
     output_dir: Path,
@@ -46,6 +120,9 @@ def run_birdnet(
     lon: float,
     week: int,
     min_conf: float,
+    sensitivity: float,
+    overlap: float,
+    merge_consecutive: int,
     locale: str,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -71,20 +148,18 @@ def run_birdnet(
         "-l",
         locale,
         "--overlap",
-        "1.5",
+        str(overlap),
         "--sensitivity",
-        "1.1",
+        str(sensitivity),
+        "--merge_consecutive",
+        str(merge_consecutive),
     ]
 
     print("Running BirdNET analysis...")
     print(" ".join(cmd))
     subprocess.run(cmd, check=True)
 
-    csv_files = sorted(output_dir.glob("*.BirdNET.results.csv"))
-    if not csv_files:
-        raise FileNotFoundError(f"No BirdNET CSV results found in {output_dir}")
-
-    return csv_files[0]
+    return find_birdnet_csv(audio, output_dir)
 
 
 def parse_csv(csv_path: Path) -> list[dict]:
@@ -183,6 +258,14 @@ def main() -> None:
     parser.add_argument("--lon", type=float, help="Recording longitude")
     parser.add_argument("--week", type=int, help="Week of year 1-48 (midsummer ≈ 25)")
     parser.add_argument("--min-conf", type=float, dest="min_conf", help="Minimum BirdNET confidence")
+    parser.add_argument("--sensitivity", type=float, help="BirdNET sensitivity (0.5–1.5)")
+    parser.add_argument("--overlap", type=float, help="BirdNET window overlap in seconds")
+    parser.add_argument(
+        "--merge-consecutive",
+        type=int,
+        dest="merge_consecutive",
+        help="Merge consecutive detections within N seconds",
+    )
     parser.add_argument("--locale", help="Species name locale (sv, en_us, ...)")
     parser.add_argument(
         "--exclusions",
@@ -207,6 +290,13 @@ def main() -> None:
     lon = args.lon if args.lon is not None else session.lon
     week = args.week if args.week is not None else session.week
     min_conf = args.min_conf if args.min_conf is not None else session.min_conf
+    sensitivity = args.sensitivity if args.sensitivity is not None else session.sensitivity
+    overlap = args.overlap if args.overlap is not None else session.overlap
+    merge_consecutive = (
+        args.merge_consecutive
+        if args.merge_consecutive is not None
+        else session.merge_consecutive
+    )
     locale = args.locale or session.locale
 
     if not audio.exists():
@@ -214,10 +304,10 @@ def main() -> None:
 
     info = sf.info(audio)
     if args.skip_birdnet:
-        csv_files = sorted(output_dir.glob("*.BirdNET.results.csv"))
-        if not csv_files:
-            raise SystemExit(f"No BirdNET CSV found in {output_dir}. Run without --skip-birdnet first.")
-        csv_path = csv_files[0]
+        try:
+            csv_path = find_birdnet_csv(audio, output_dir)
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
     else:
         csv_path = run_birdnet(
             audio,
@@ -226,11 +316,19 @@ def main() -> None:
             lon=lon,
             week=week,
             min_conf=min_conf,
+            sensitivity=sensitivity,
+            overlap=overlap,
+            merge_consecutive=merge_consecutive,
             locale=locale,
         )
 
     exclusions = load_exclusions(args.exclusions)
-    detections = apply_exclusions(parse_csv(csv_path), exclusions)
+    detections = merge_adjacent_detections(
+        clip_detections_to_duration(
+            apply_exclusions(parse_csv(csv_path), exclusions),
+            info.duration,
+        )
+    )
     summary = build_summary(detections)
     peaks = compute_waveform_peaks(audio)
 
@@ -242,6 +340,9 @@ def main() -> None:
         "week": week,
         "locale": locale,
         "min_confidence": min_conf,
+        "sensitivity": sensitivity,
+        "overlap": overlap,
+        "merge_consecutive": merge_consecutive,
         "duration_seconds": round(info.duration, 2),
         "sample_rate": info.samplerate,
         "channels": info.channels,
