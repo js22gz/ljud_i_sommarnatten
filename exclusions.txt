@@ -1,0 +1,3 @@
+# Manual false-positive filter (scientific or common name, one per line)
+Scolopax rusticola
+Morkulla

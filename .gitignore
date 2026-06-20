@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+
+# Large session assets (keep session.json in git)
+sessions/**/*.ogg
+sessions/**/*.wav
+sessions/**/*.mp3
+sessions/**/*.flac
+sessions/**/*.m4a
+sessions/**/*.jpg
+sessions/**/*.jpeg
+sessions/**/*.png
+
+# Generated per session (reproducible from analyze + build)
+sessions/**/results.json
+sessions/**/index.html
+sessions/**/*.BirdNET.results.csv
+sessions/**/BirdNET_analysis_params.csv
+
+# Legacy directories (removed)
+output/
+visualizer/
+recordings/
+
+# Legacy root recordings
+/birds-midsummersnights-eve_RAW.wav
+/Midsommarafton 21_30.ogg
