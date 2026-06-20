@@ -523,6 +523,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const LONG_PRESS_MS = 450;
       let longPressTimer = null;
       let longPressTriggered = false;
+      let hasPlayed = false;
 
       function isWaveTarget(event) {
         return !event.target.closest(".volume-slider");
@@ -568,6 +569,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           longPressTriggered = false;
           return;
         }
+        if (!hasPlayed) {
+          playFromRatio(0);
+          return;
+        }
         playFromRatio(ratioFromEvent(event));
       });
 
@@ -596,7 +601,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
       });
 
-      audio.addEventListener("play", () => setPlayingState(true));
+      audio.addEventListener("play", () => {
+        hasPlayed = true;
+        setPlayingState(true);
+      });
       audio.addEventListener("pause", () => setPlayingState(false));
       audio.addEventListener("ended", () => setPlayingState(false));
       audio.addEventListener("timeupdate", updatePlayhead);
