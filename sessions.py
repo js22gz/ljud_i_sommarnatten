@@ -14,13 +14,16 @@ AUDIO_EXTENSIONS = {".ogg", ".wav", ".mp3", ".flac", ".m4a"}
 DEFAULTS = {
     "title": "Ljud i sommarnatten",
     "subtitle": "Trädgårdsfåglar — BirdNET-analys",
-    "lat": 59.33,
-    "lon": 18.07,
+    "lat": 56.72564545228643,
+    "lon": 16.112683711399647,
     "week": 25,
     "min_conf": 0.25,
     "sensitivity": 1.2,
     "overlap": 2.0,
     "merge_consecutive": 3,
+    "merge_max_gap": 1.0,
+    "analysis_skip_seconds": 0,
+    "playback_lead_in_seconds": 10,
     "locale": "sv",
 }
 
@@ -30,6 +33,7 @@ class Session:
     id: str
     root: Path
     audio: Path
+    analysis_audio: Path
     title: str
     subtitle: str
     lat: float
@@ -39,6 +43,9 @@ class Session:
     sensitivity: float
     overlap: float
     merge_consecutive: int
+    merge_max_gap: float
+    analysis_skip_seconds: float
+    playback_lead_in_seconds: float
     locale: str
     bg_landscape: Path | None
     bg_portrait: Path | None
@@ -105,11 +112,19 @@ def load_session(session_id: str) -> Session:
 
     merged = {**DEFAULTS, **config}
     audio = _find_audio(session_dir, merged.get("audio"))
+    analysis_preferred = merged.get("analysis_audio")
+    if analysis_preferred:
+        analysis_audio = session_dir / analysis_preferred
+        if not analysis_audio.exists():
+            raise FileNotFoundError(f"Analysis audio not found for session: {analysis_audio}")
+    else:
+        analysis_audio = audio
 
     return Session(
         id=session_id,
         root=session_dir,
         audio=audio,
+        analysis_audio=analysis_audio,
         title=merged["title"],
         subtitle=merged["subtitle"],
         lat=float(merged["lat"]),
@@ -119,6 +134,9 @@ def load_session(session_id: str) -> Session:
         sensitivity=float(merged["sensitivity"]),
         overlap=float(merged["overlap"]),
         merge_consecutive=int(merged["merge_consecutive"]),
+        merge_max_gap=float(merged["merge_max_gap"]),
+        analysis_skip_seconds=float(merged["analysis_skip_seconds"]),
+        playback_lead_in_seconds=float(merged["playback_lead_in_seconds"]),
         locale=str(merged["locale"]),
         bg_landscape=_optional_asset(session_dir, "landscape.jpg"),
         bg_portrait=_optional_asset(session_dir, "portrait.jpg"),

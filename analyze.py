@@ -28,6 +28,24 @@ def load_exclusions(path: Path) -> set[str]:
     }
 
 
+def skip_lead_in(detections: list[dict], skip_seconds: float) -> list[dict]:
+    if skip_seconds <= 0:
+        return detections
+    trimmed: list[dict] = []
+    for det in detections:
+        if det["end"] <= skip_seconds:
+            continue
+        start = max(det["start"], skip_seconds)
+        trimmed.append(
+            {
+                **det,
+                "start": round(start, 2),
+                "duration": round(det["end"] - start, 2),
+            }
+        )
+    return trimmed
+
+
 def clip_detections_to_duration(
     detections: list[dict],
     duration_seconds: float,
@@ -284,7 +302,8 @@ def main() -> None:
         raise SystemExit("Provide --session <id>. Use 'python run.py --list' to see sessions.")
 
     session = load_session(args.session)
-    audio = args.audio or session.audio
+    analysis_audio = args.audio or session.analysis_audio
+    playback_audio = session.audio
     output_dir = args.output or session.root
     lat = args.lat if args.lat is not None else session.lat
     lon = args.lon if args.lon is not None else session.lon
@@ -299,18 +318,22 @@ def main() -> None:
     )
     locale = args.locale or session.locale
 
-    if not audio.exists():
-        raise SystemExit(f"Audio file not found: {audio}")
+    if not analysis_audio.exists():
+        raise SystemExit(f"Analysis audio file not found: {analysis_audio}")
+    if not playback_audio.exists():
+        raise SystemExit(f"Playback audio file not found: {playback_audio}")
 
-    info = sf.info(audio)
+    playback_info = sf.info(playback_audio)
     if args.skip_birdnet:
         try:
-            csv_path = find_birdnet_csv(audio, output_dir)
+            csv_path = find_birdnet_csv(analysis_audio, output_dir)
         except FileNotFoundError as exc:
             raise SystemExit(str(exc)) from exc
     else:
+        if analysis_audio != playback_audio:
+            print(f"Analyzing {analysis_audio.name} (playback: {playback_audio.name})")
         csv_path = run_birdnet(
-            audio,
+            analysis_audio,
             output_dir,
             lat=lat,
             lon=lon,
@@ -325,12 +348,16 @@ def main() -> None:
     exclusions = load_exclusions(args.exclusions)
     detections = merge_adjacent_detections(
         clip_detections_to_duration(
-            apply_exclusions(parse_csv(csv_path), exclusions),
-            info.duration,
-        )
+            skip_lead_in(
+                apply_exclusions(parse_csv(csv_path), exclusions),
+                session.analysis_skip_seconds,
+            ),
+            playback_info.duration,
+        ),
+        max_gap=session.merge_max_gap,
     )
     summary = build_summary(detections)
-    peaks = compute_waveform_peaks(audio)
+    peaks = compute_waveform_peaks(playback_audio)
 
     meta = {
         "title": session.title,
@@ -343,14 +370,19 @@ def main() -> None:
         "sensitivity": sensitivity,
         "overlap": overlap,
         "merge_consecutive": merge_consecutive,
-        "duration_seconds": round(info.duration, 2),
-        "sample_rate": info.samplerate,
-        "channels": info.channels,
+        "merge_max_gap": session.merge_max_gap,
+        "analysis_skip_seconds": session.analysis_skip_seconds,
+        "playback_lead_in_seconds": session.playback_lead_in_seconds,
+        "duration_seconds": round(playback_info.duration, 2),
+        "sample_rate": playback_info.samplerate,
+        "channels": playback_info.channels,
     }
+    if analysis_audio != playback_audio:
+        meta["analysis_audio_file"] = analysis_audio.name
 
     results_path = output_dir / "results.json"
     write_results_json(
-        audio=audio,
+        audio=playback_audio,
         detections=detections,
         summary=summary,
         peaks=peaks,

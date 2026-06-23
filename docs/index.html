@@ -62,6 +62,7 @@
       background: transparent;
       border-color: transparent;
       box-shadow: none;
+      overflow: visible;
     }
     .card-body { padding: 18px 20px 22px; }
 
@@ -206,6 +207,9 @@
     .legend-entry {
       position: relative;
     }
+    .legend-entry.open {
+      z-index: 40;
+    }
     .legend-item {
       --highlight-strength: 0;
       display: inline-flex;
@@ -233,13 +237,15 @@
       position: absolute;
       top: calc(100% + 6px);
       left: 50%;
-      transform: translateX(-50%);
+      translate: -50% 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
       min-width: 11.5rem;
       max-width: 16rem;
-      max-height: 240px;
-      overflow-y: auto;
+      max-height: min(320px, 70vh);
+      overflow: hidden;
       margin: 0;
-      padding: 6px;
+      padding: 0;
       list-style: none;
       border-radius: 12px;
       border: 1px solid var(--line);
@@ -249,6 +255,59 @@
     }
     .legend-menu[hidden] {
       display: none;
+    }
+    .legend-menu-header {
+      display: flex;
+      flex: 0 0 auto;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 8px 10px;
+      border-bottom: 1px solid var(--line);
+      list-style: none;
+    }
+    .legend-menu-scroll {
+      display: block;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      list-style: none;
+      margin: 0;
+      padding: 6px;
+    }
+    .legend-menu-items {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .legend-menu-header[hidden] {
+      display: none;
+    }
+    .legend-menu-photo {
+      width: 92px;
+      height: 92px;
+      border-radius: 14px;
+      object-fit: cover;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.04);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+    }
+    .legend-menu-photo[hidden] {
+      display: none;
+    }
+    .legend-menu-credit {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.35;
+    }
+    .legend-menu-credit a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .legend-menu-credit a:hover {
+      text-decoration: underline;
     }
     .legend-menu-item {
       display: block;
@@ -456,7 +515,6 @@
       audioReady = true;
       document.getElementById("totalTime").textContent = formatTime(audio.duration || duration);
       drawWaveform();
-      drawDetectionOverlay();
       updatePlayhead();
       audio.play().catch(() => {});
       setPlayingState(!audio.paused);
@@ -499,23 +557,24 @@
     }
 
     const DISPLAY_MIN_CONFIDENCE = 0.5;
+    const PLAYBACK_LEAD_IN = Number(data.meta?.playback_lead_in_seconds) || 0;
+
+    function isPastLeadIn(det) {
+      return det.start >= PLAYBACK_LEAD_IN;
+    }
     const colorBySpecies = new Map();
     const speciesCount = new Map();
     const speciesLane = new Map();
     const legendHolds = new Map();
     const LEGEND_TOP_COUNT = 8;
 
-    const visibleSpecies = data.summary.filter((species) =>
-      data.detections.some(
-        (det) =>
-          det.scientific_name === species.scientific_name &&
-          det.confidence >= DISPLAY_MIN_CONFIDENCE
-      )
+    const speciesByScientificName = new Map(
+      data.summary.map((species) => [species.scientific_name, species])
     );
 
     const detectionsBySpecies = new Map();
     for (const det of data.detections) {
-      if (det.confidence < DISPLAY_MIN_CONFIDENCE) {
+      if (det.confidence < DISPLAY_MIN_CONFIDENCE || !isPastLeadIn(det)) {
         continue;
       }
       const list = detectionsBySpecies.get(det.scientific_name) ?? [];
@@ -526,11 +585,126 @@
       list.sort((a, b) => a.start - b.start || b.confidence - a.confidence);
     }
 
-    visibleSpecies.forEach((species, index) => {
-      colorBySpecies.set(species.scientific_name, COLORS[index % COLORS.length]);
-      speciesCount.set(species.scientific_name, species.count);
-      speciesLane.set(species.scientific_name, index);
-    });
+    const firstIdentificationBySpecies = new Map();
+    for (const det of data.detections) {
+      if (det.confidence < DISPLAY_MIN_CONFIDENCE || !isPastLeadIn(det)) {
+        continue;
+      }
+      const firstSeen = firstIdentificationBySpecies.get(det.scientific_name);
+      if (firstSeen === undefined || det.start < firstSeen) {
+        firstIdentificationBySpecies.set(det.scientific_name, det.start);
+      }
+    }
+
+    const introducedSpecies = [];
+    const introducedSet = new Set();
+    let introducedSpeciesKey = "";
+
+    function ensureSpeciesColor(species) {
+      if (!colorBySpecies.has(species.scientific_name)) {
+        const index = introducedSpecies.length;
+        colorBySpecies.set(species.scientific_name, COLORS[index % COLORS.length]);
+        speciesCount.set(species.scientific_name, species.count);
+      }
+    }
+
+    function introduceSpecies(scientificName) {
+      if (introducedSet.has(scientificName)) {
+        return;
+      }
+      const species = speciesByScientificName.get(scientificName);
+      if (!species) {
+        return;
+      }
+      introducedSet.add(scientificName);
+      introducedSpecies.push(species);
+      ensureSpeciesColor(species);
+    }
+
+    function getActiveDetections(currentTime) {
+      if (currentTime < PLAYBACK_LEAD_IN) {
+        return [];
+      }
+      return data.detections.filter(
+        (det) =>
+          isPastLeadIn(det) &&
+          currentTime >= det.start &&
+          currentTime <= det.end &&
+          det.confidence >= DISPLAY_MIN_CONFIDENCE
+      );
+    }
+
+    function pickSpotlightDetections(active) {
+      if (!active.length) {
+        return [];
+      }
+
+      const bestBySpecies = new Map();
+      for (const det of active) {
+        const existing = bestBySpecies.get(det.scientific_name);
+        if (!existing || det.confidence > existing.confidence) {
+          bestBySpecies.set(det.scientific_name, det);
+        }
+      }
+
+      const ranked = [...bestBySpecies.values()].sort(
+        (a, b) => b.confidence - a.confidence
+      );
+      const activeCount = ranked.length;
+      const topConfidence = ranked[0].confidence;
+      let maxSpotlights = 1;
+      if (activeCount >= 8) {
+        maxSpotlights = 6;
+      } else if (activeCount >= 5) {
+        maxSpotlights = 4;
+      } else if (activeCount >= 3) {
+        maxSpotlights = 3;
+      } else if (activeCount === 2) {
+        maxSpotlights = 2;
+      }
+
+      const closeGap = activeCount >= 5 ? 0.18 : 0.1;
+      const picked = [];
+      for (const det of ranked) {
+        if (!picked.length) {
+          picked.push(det);
+          continue;
+        }
+        if (picked.length >= maxSpotlights) {
+          break;
+        }
+        if (topConfidence - det.confidence <= closeGap) {
+          picked.push(det);
+        }
+      }
+      return picked;
+    }
+
+    function introduceIdentifiedSpecies(currentTime) {
+      if (currentTime < PLAYBACK_LEAD_IN) {
+        return;
+      }
+      for (const [scientificName, firstSeen] of firstIdentificationBySpecies) {
+        if (currentTime >= firstSeen) {
+          introduceSpecies(scientificName);
+        }
+      }
+    }
+
+    function getSortedIntroducedSpecies() {
+      return [...introducedSpecies].sort((a, b) => {
+        const firstA = firstIdentificationBySpecies.get(a.scientific_name) ?? Infinity;
+        const firstB = firstIdentificationBySpecies.get(b.scientific_name) ?? Infinity;
+        return firstA - firstB || b.count - a.count || b.max_confidence - a.max_confidence;
+      });
+    }
+
+    function updateSpeciesLanes(visibleSpecies) {
+      speciesLane.clear();
+      visibleSpecies.forEach((species, index) => {
+        speciesLane.set(species.scientific_name, index);
+      });
+    }
 
     function formatTime(seconds) {
       const mins = Math.floor(seconds / 60);
@@ -549,15 +723,106 @@
       return `<li><button type="button" class="legend-menu-item" data-start="${det.start}"><span class="legend-menu-time">${formatTime(det.start)}${endLabel}</span><span class="legend-menu-confidence">${Math.round(det.confidence * 100)}%</span></button></li>`;
     }
 
+    const birdImageCache = new Map();
+
+    async function fetchBirdImage(scientificName) {
+      if (birdImageCache.has(scientificName)) {
+        return birdImageCache.get(scientificName);
+      }
+      const request = (async () => {
+        try {
+          const searchUrl =
+            "https://www.wikidata.org/w/api.php?action=wbsearchentities" +
+            `&search=${encodeURIComponent(scientificName)}&language=en&format=json&origin=*`;
+          const searchData = await (await fetch(searchUrl)).json();
+          const entity = searchData.search?.[0];
+          if (!entity) {
+            return null;
+          }
+          const entityData = await (
+            await fetch(`https://www.wikidata.org/wiki/Special:EntityData/${entity.id}.json`)
+          ).json();
+          const claims = entityData.entities?.[entity.id]?.claims?.P18;
+          if (!claims?.length) {
+            return null;
+          }
+          const fileName = claims[0].mainsnak.datavalue.value;
+          const filePath = encodeURIComponent(fileName.replace(/ /g, "_"));
+          return {
+            thumbUrl: `https://commons.wikimedia.org/wiki/Special:FilePath/${filePath}?width=240`,
+            fileName,
+            label: entity.label || scientificName,
+            commonsUrl: `https://commons.wikimedia.org/wiki/File:${filePath}`,
+          };
+        } catch {
+          return null;
+        }
+      })();
+      birdImageCache.set(scientificName, request);
+      return request;
+    }
+
+    async function loadMenuPhoto(entry) {
+      const header = entry.querySelector(".legend-menu-header");
+      const image = entry.querySelector(".legend-menu-photo");
+      const credit = entry.querySelector(".legend-menu-credit");
+      if (!header || !image || !credit || header.dataset.loaded === "true") {
+        return;
+      }
+      header.dataset.loaded = "true";
+      const result = await fetchBirdImage(header.dataset.scientific);
+      if (!result) {
+        header.hidden = true;
+        return;
+      }
+      image.addEventListener(
+        "load",
+        () => {
+          const scrollArea = entry.querySelector(".legend-menu-scroll");
+          if (scrollArea) {
+            scrollArea.scrollTop = 0;
+          }
+        },
+        { once: true }
+      );
+      image.src = result.thumbUrl;
+      image.alt = result.label;
+      image.hidden = false;
+      credit.innerHTML =
+        `Foto: <a href="${result.commonsUrl}" target="_blank" rel="noopener">Wikimedia Commons</a>`;
+    }
+
+    function renderLegendEntry(species, index) {
+      const color = colorBySpecies.get(species.scientific_name);
+      const minorClass = index >= LEGEND_TOP_COUNT ? " minor" : "";
+      const detections = detectionsBySpecies.get(species.scientific_name) ?? [];
+      const menuItems = detections.map(renderDetectionMenuItem).join("");
+      const photoHeader =
+        `<li class="legend-menu-header" data-scientific="${species.scientific_name}">` +
+        `<img class="legend-menu-photo" alt="" hidden />` +
+        `<span class="legend-menu-credit"></span></li>`;
+      return `<div class="legend-entry"><button type="button" class="legend-item${minorClass}" data-species="${species.scientific_name}" aria-expanded="false" aria-haspopup="listbox"><span class="swatch" style="background:${color}"></span><span class="legend-label"><span class="legend-name">${species.common_name}</span><span class="legend-confidence"></span></span></button><ul class="legend-menu" hidden>${photoHeader}<li class="legend-menu-scroll" role="presentation"><ul class="legend-menu-items" role="listbox">${menuItems}</ul></li></ul></div>`;
+    }
+
     function setupLegend() {
-      const legend = document.getElementById("legend");
-      legend.innerHTML = visibleSpecies.map((species, index) => {
-        const color = colorBySpecies.get(species.scientific_name);
-        const minorClass = index >= LEGEND_TOP_COUNT ? " minor" : "";
-        const detections = detectionsBySpecies.get(species.scientific_name) ?? [];
-        const menuItems = detections.map(renderDetectionMenuItem).join("");
-        return `<div class="legend-entry"><button type="button" class="legend-item${minorClass}" data-species="${species.scientific_name}" aria-expanded="false" aria-haspopup="listbox"><span class="swatch" style="background:${color}"></span><span class="legend-label"><span class="legend-name">${species.common_name}</span><span class="legend-confidence"></span></span></button><ul class="legend-menu" role="listbox" hidden>${menuItems}</ul></div>`;
-      }).join("");
+      document.getElementById("legend").innerHTML = "";
+    }
+
+    function updateLegend(currentTime) {
+      introduceIdentifiedSpecies(currentTime);
+      const spotlights = pickSpotlightDetections(getActiveDetections(currentTime));
+      const visibleSpecies = getSortedIntroducedSpecies();
+      const key = visibleSpecies.map((species) => species.scientific_name).join("|");
+      if (key !== introducedSpeciesKey) {
+        introducedSpeciesKey = key;
+        closeLegendMenus();
+        updateSpeciesLanes(visibleSpecies);
+        document.getElementById("legend").innerHTML = visibleSpecies
+          .map((species, index) => renderLegendEntry(species, index))
+          .join("");
+      }
+
+      updateLegendHighlights(currentTime, spotlights);
     }
 
     function closeLegendMenus(exceptEntry = null) {
@@ -593,6 +858,31 @@
     function setupLegendMenus() {
       const legend = document.getElementById("legend");
 
+      legend.addEventListener(
+        "wheel",
+        (event) => {
+          const menu = event.target.closest(".legend-menu");
+          if (!menu || menu.hidden) {
+            return;
+          }
+          const scrollArea = menu.querySelector(".legend-menu-scroll");
+          if (!scrollArea || scrollArea.scrollHeight <= scrollArea.clientHeight) {
+            return;
+          }
+          const delta = event.deltaY;
+          const atTop = scrollArea.scrollTop <= 0;
+          const atBottom =
+            scrollArea.scrollTop + scrollArea.clientHeight >= scrollArea.scrollHeight - 1;
+          if ((delta < 0 && atTop) || (delta > 0 && atBottom)) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          scrollArea.scrollTop += delta;
+        },
+        { passive: false }
+      );
+
       legend.addEventListener("click", (event) => {
         const menuItem = event.target.closest(".legend-menu-item");
         if (menuItem) {
@@ -616,6 +906,7 @@
           entry.classList.add("open");
           menu.hidden = false;
           button.setAttribute("aria-expanded", "true");
+          loadMenuPhoto(entry);
         }
       });
 
@@ -631,25 +922,27 @@
       return 0.15 + confidence * confidence * 2.5;
     }
 
-    function updateLegendHighlights(currentTime) {
-      for (const det of data.detections) {
-        if (
-          currentTime >= det.start &&
-          currentTime <= det.end &&
-          det.confidence >= DISPLAY_MIN_CONFIDENCE
-        ) {
-          const untilTime = det.end + holdAfterSeconds(det.confidence);
-          const existing = legendHolds.get(det.scientific_name);
-          legendHolds.set(det.scientific_name, {
-            untilTime: Math.max(untilTime, existing?.untilTime ?? 0),
-            strength: Math.max(det.confidence, existing?.strength ?? 0),
-          });
+    function updateLegendHighlights(currentTime, spotlights) {
+      const nextHolds = new Map();
+      for (const det of spotlights) {
+        const untilTime = currentTime + holdAfterSeconds(det.confidence);
+        const existing = legendHolds.get(det.scientific_name);
+        nextHolds.set(det.scientific_name, {
+          untilTime: Math.max(untilTime, existing?.untilTime ?? 0),
+          strength: Math.max(det.confidence, existing?.strength ?? 0),
+        });
+      }
+
+      for (const [species, state] of legendHolds.entries()) {
+        if (currentTime <= state.untilTime && !nextHolds.has(species)) {
+          nextHolds.set(species, state);
         }
       }
 
-      for (const [species, state] of [...legendHolds.entries()]) {
-        if (currentTime > state.untilTime) {
-          legendHolds.delete(species);
+      legendHolds.clear();
+      for (const [species, state] of nextHolds.entries()) {
+        if (currentTime <= state.untilTime) {
+          legendHolds.set(species, state);
         }
       }
 
@@ -665,7 +958,6 @@
             : "";
         }
       });
-
     }
 
     function resizeCanvas(canvas, wrap) {
@@ -697,23 +989,27 @@
       });
     }
 
-    function drawDetectionOverlay() {
+    function drawDetectionOverlay(currentTime = 0) {
       const wrap = document.getElementById("waveWrap");
       const { ctx, width, height } = resizeCanvas(timelineCanvas, wrap);
-      const laneCount = Math.max(1, visibleSpecies.length);
+      ctx.clearRect(0, 0, width, height);
+      if (currentTime < PLAYBACK_LEAD_IN) {
+        return;
+      }
+
+      const laneCount = Math.max(1, speciesLane.size);
       const topPad = 6;
       const laneHeight = Math.max(3, (height - topPad * 2) / laneCount);
       const sortedDetections = [...data.detections]
-        .filter((det) => det.confidence >= DISPLAY_MIN_CONFIDENCE)
+        .filter((det) => det.confidence >= DISPLAY_MIN_CONFIDENCE && isPastLeadIn(det))
         .sort((a, b) => {
           const countA = speciesCount.get(a.scientific_name) ?? 0;
           const countB = speciesCount.get(b.scientific_name) ?? 0;
           return countA - countB;
         });
 
-      ctx.clearRect(0, 0, width, height);
-      sortedDetections.forEach(det => {
-        if (det.end <= 0 || det.start >= duration) {
+      sortedDetections.forEach((det) => {
+        if (det.end <= 0 || det.start >= duration || det.start > currentTime) {
           return;
         }
         const lane = speciesLane.get(det.scientific_name);
@@ -721,7 +1017,10 @@
           return;
         }
         const start = Math.max(0, det.start);
-        const end = Math.min(duration, det.end);
+        const end = Math.min(duration, det.end, currentTime);
+        if (end <= start) {
+          return;
+        }
         const x = (start / duration) * width;
         const w = Math.max(2, ((end - start) / duration) * width);
         const y = topPad + lane * laneHeight;
@@ -739,7 +1038,8 @@
       const ratio = total > 0 ? audio.currentTime / total : 0;
       playhead.style.left = `${ratio * wrap.clientWidth}px`;
       document.getElementById("currentTime").textContent = formatTime(audio.currentTime);
-      updateLegendHighlights(audio.currentTime);
+      updateLegend(audio.currentTime);
+      drawDetectionOverlay(audio.currentTime);
     }
 
     function setupVolumeSlider() {
@@ -889,7 +1189,6 @@
       audio.addEventListener("loadedmetadata", startAutoplay, { once: true });
       window.addEventListener("resize", () => {
         drawWaveform();
-        drawDetectionOverlay();
         updatePlayhead();
       });
     }

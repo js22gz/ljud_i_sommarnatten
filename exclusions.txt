@@ -1,3 +1,7 @@
 # Manual false-positive filter (scientific or common name, one per line)
+# Only add species confirmed by listening — not ecological guesses.
+
 Scolopax rusticola
 Morkulla
+Accipiter gentilis
+Duvhök

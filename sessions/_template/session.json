@@ -2,8 +2,8 @@
   "title": "Min inspelning",
   "subtitle": "Trädgårdsfåglar — BirdNET-analys",
   "audio": "recording.ogg",
-  "lat": 59.33,
-  "lon": 18.07,
+  "lat": 56.72564545228643,
+  "lon": 16.112683711399647,
   "week": 25,
   "min_conf": 0.35,
   "locale": "sv"
