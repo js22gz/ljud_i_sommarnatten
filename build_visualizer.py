@@ -184,11 +184,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .scrub-handle {
       position: absolute;
-      top: 0;
+      bottom: 5px;
       left: 0;
       width: 16px;
-      height: 12px;
-      translate: -50% -100%;
+      height: 11px;
+      translate: -50% 0;
       pointer-events: none;
       z-index: 2;
     }
@@ -204,17 +204,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       border-right: 8px solid transparent;
       border-bottom: 11px solid var(--accent-2);
       filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.75));
-    }
-    .scrub-handle::after {
-      content: "";
-      position: absolute;
-      left: 50%;
-      bottom: -3px;
-      translate: -50% 0;
-      width: 2px;
-      height: 5px;
-      background: var(--accent-2);
-      box-shadow: 0 0 8px rgba(251, 191, 36, 0.6);
     }
     .scrub-times {
       position: relative;
