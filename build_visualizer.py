@@ -139,7 +139,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease,
         transform 0.2s ease;
     }
-    .wave-wrap:hover .play-control,
+    .play-control:not(.is-playing),
+    .wave-wrap:not(.has-interacted) .play-control,
+    .wave-wrap:hover .play-control.is-playing,
     .play-control:focus-visible {
       opacity: 1;
       pointer-events: auto;
@@ -1095,9 +1097,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     function setupInteractions() {
       setupVolumeSlider();
 
+      const waveWrap = document.getElementById("waveWrap");
       const playControl = document.getElementById("playControl");
       const scrubBar = document.getElementById("scrubBar");
       let isScrubbing = false;
+
+      function markInteracted() {
+        waveWrap.classList.add("has-interacted");
+      }
 
       function ratioFromScrubBar(event) {
         const rect = scrubBar.getBoundingClientRect();
@@ -1115,11 +1122,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
       playControl.addEventListener("click", (event) => {
         event.stopPropagation();
+        markInteracted();
         togglePlayback();
       });
 
       scrubBar.addEventListener("pointerdown", (event) => {
         event.stopPropagation();
+        markInteracted();
         isScrubbing = true;
         scrubBar.setPointerCapture(event.pointerId);
         seekFromScrub(event);
