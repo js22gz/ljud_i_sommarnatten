@@ -161,11 +161,6 @@
       bottom: 0;
       z-index: 6;
       height: var(--scrub-height);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 1rem;
-      padding: 0 44px;
       font-size: 0.82rem;
       color: var(--text);
       background: linear-gradient(to top, rgba(8, 16, 29, 0.88), rgba(8, 16, 29, 0.55));
@@ -173,9 +168,53 @@
       cursor: pointer;
       touch-action: none;
     }
-    .scrub-bar span {
-      font-variant-numeric: tabular-nums;
+    .scrub-handle {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 16px;
+      height: 12px;
+      translate: -50% -100%;
       pointer-events: none;
+      z-index: 2;
+    }
+    .scrub-handle::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      translate: -50% 0;
+      width: 0;
+      height: 0;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-bottom: 11px solid var(--accent-2);
+      filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.75));
+    }
+    .scrub-handle::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -3px;
+      translate: -50% 0;
+      width: 2px;
+      height: 5px;
+      background: var(--accent-2);
+      box-shadow: 0 0 8px rgba(251, 191, 36, 0.6);
+    }
+    .scrub-times {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      padding: 0 44px;
+      pointer-events: none;
+    }
+    .scrub-times span {
+      font-variant-numeric: tabular-nums;
       user-select: none;
     }
     .volume-slider {
@@ -498,8 +537,11 @@
             </div>
           </div>
           <div class="scrub-bar" id="scrubBar" aria-label="Sök i inspelningen">
-            <span id="currentTime">0:00</span>
-            <span id="totalTime">0:00</span>
+            <div class="scrub-handle" id="scrubHandle" aria-hidden="true"></div>
+            <div class="scrub-times">
+              <span id="currentTime">0:00</span>
+              <span id="totalTime">0:00</span>
+            </div>
           </div>
         </div>
         <div class="legend" id="legend"></div>
@@ -1062,11 +1104,15 @@
       });
     }
 
+    const scrubHandle = document.getElementById("scrubHandle");
+
     function updatePlayhead() {
       const wrap = document.getElementById("waveWrap");
       const total = getDuration();
       const ratio = total > 0 ? audio.currentTime / total : 0;
-      playhead.style.left = `${ratio * wrap.clientWidth}px`;
+      const position = `${ratio * wrap.clientWidth}px`;
+      playhead.style.left = position;
+      scrubHandle.style.left = position;
       document.getElementById("currentTime").textContent = formatTime(audio.currentTime);
       updateLegend(audio.currentTime);
       drawDetectionOverlay(audio.currentTime);
